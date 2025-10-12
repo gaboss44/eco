@@ -109,8 +109,8 @@ allprojects {
 
     dependencies {
         // Kotlin
-        implementation(kotlin("stdlib", version = "2.1.0"))
-        implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
+        compileOnly(kotlin("stdlib", version = "2.1.0"))
+        compileOnly("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
 
         // Included in spigot jar, no need to move to implementation
         compileOnly("org.jetbrains:annotations:23.0.0")
@@ -224,6 +224,8 @@ tasks {
         Kotlin and caffeine are not shaded so that they can be accessed directly by eco plugins.
         Also, not relocating adventure, because it's a pain in the ass, and it doesn't *seem* to be causing loader constraint violations.
          */
+        exclude("kotlin/**")
+        exclude("kotlinx/**")
     }
 }
 
