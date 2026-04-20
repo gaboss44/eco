@@ -3,6 +3,7 @@ package com.willfp.eco.util;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.LoadingCache;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.gson.JsonSyntaxException;
@@ -14,9 +15,9 @@ import net.kyori.adventure.text.JoinConfiguration;
 import net.kyori.adventure.text.TextComponent;
 import net.kyori.adventure.text.format.TextDecoration;
 import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer;
+import net.kyori.adventure.text.minimessage.MiniMessage;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import net.md_5.bungee.api.ChatColor;
-import org.apache.commons.lang.Validate;
 import org.bukkit.entity.Player;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -53,7 +54,7 @@ public final class StringUtils {
      * Regexes for hex codes.
      */
     private static final List<Pattern> HEX_PATTERNS = new ImmutableList.Builder<Pattern>()
-            .add(Pattern.compile("&#" + "([A-Fa-f0-9]{6})" + ""))
+            .add(Pattern.compile("&#" + "([A-Fa-f0-9]{6})"))
             .add(Pattern.compile("\\{#" + "([A-Fa-f0-9]{6})" + "}"))
             .add(Pattern.compile("<#" + "([A-Fa-f0-9]{6})" + ">"))
             .build();
@@ -62,16 +63,35 @@ public final class StringUtils {
      * Legacy serializer.
      */
     private static final LegacyComponentSerializer LEGACY_COMPONENT_SERIALIZER = LegacyComponentSerializer.builder()
-            .character('\u00a7')
+            .character('§')
             .useUnusualXRepeatedCharacterHexFormat()
             .hexColors()
             .build();
 
     /**
+     * MiniMessage instance for Component features legacy §-text cannot represent
+     * (sprite, font, translate, hover, click, insertion, ...).
+     */
+    private static final MiniMessage MINI_MESSAGE = MiniMessage.miniMessage();
+
+    /**
+     * MiniMessage tags whose semantics can't survive a legacy round-trip. When
+     * {@link #toComponent(String)} sees one of these it routes the string through
+     * MiniMessage so the feature actually renders instead of appearing as literal
+     * tag text; plain legacy input (no recognised tags) uses the legacy
+     * deserializer unchanged. {@link #toLegacy(Component)} mirrors this by
+     * emitting MiniMessage output for any Component that carries one of these
+     * features, so a Component → String → Component round-trip preserves them.
+     */
+    private static final Pattern MINIMESSAGE_ONLY_TAGS = Pattern.compile(
+            "<(sprite|font|translate|lang|tr|hover|click|insertion|keybind|key|nbt|score|selector|sel|shadow_color|shadow|newline|br)(:[^>]*)?>",
+            Pattern.CASE_INSENSITIVE
+    );
+
+    /**
      * GSON serializer.
      */
     private static final GsonComponentSerializer GSON_COMPONENT_SERIALIZER = GsonComponentSerializer.builder()
-            .emitLegacyHoverEvent()
             .build();
 
     /**
@@ -265,7 +285,7 @@ public final class StringUtils {
     @NotNull
     public static String format(@NotNull final String message,
                                 @NotNull final FormatOption option) {
-        return format(message, (Player) null, option);
+        return format(message, null, option);
     }
 
     /**
@@ -310,7 +330,7 @@ public final class StringUtils {
     @NotNull
     public static Component formatToComponent(@NotNull final String message,
                                               @NotNull final FormatOption option) {
-        return formatToComponent(message, (Player) null, option);
+        return formatToComponent(message, null, option);
     }
 
     /**
@@ -455,7 +475,11 @@ public final class StringUtils {
                                                  @NotNull final Color end,
                                                  final int step) {
         ChatColor[] colors = new ChatColor[step];
-        if (step <= 1) {
+        if (step <= 0) {
+            return colors;
+        }
+        if (step == 1) {
+            colors[0] = ChatColor.of(start);
             return colors;
         }
         int stepR = Math.abs(start.getRed() - end.getRed()) / (step - 1);
@@ -497,21 +521,15 @@ public final class StringUtils {
      */
     @NotNull
     public static String toNiceString(@Nullable final Object object) {
-        if (object == null) {
-            return "null";
-        }
+        return switch (object) {
+            case null -> "null";
+            case Integer i -> i.toString();
+            case String s -> s;
+            case Double v -> NumberUtils.format(v);
+            case Collection<?> c -> c.stream().map(StringUtils::toNiceString).collect(Collectors.joining(", "));
+            default -> String.valueOf(object);
+        };
 
-        if (object instanceof Integer) {
-            return ((Integer) object).toString();
-        } else if (object instanceof String) {
-            return (String) object;
-        } else if (object instanceof Double) {
-            return NumberUtils.format((Double) object);
-        } else if (object instanceof Collection<?> c) {
-            return c.stream().map(StringUtils::toNiceString).collect(Collectors.joining(", "));
-        } else {
-            return String.valueOf(object);
-        }
     }
 
     /**
@@ -600,24 +618,64 @@ public final class StringUtils {
 
     /**
      * Convert legacy (bukkit) text to Component.
+     * <p>
+     * Input containing a MiniMessage tag that legacy can't express (sprite, font,
+     * translate, hover, click, insertion, ...) is parsed via MiniMessage so the
+     * feature renders; plain legacy text is deserialized as legacy as before.
      *
      * @param legacy The legacy text.
      * @return The component.
      */
     @NotNull
     public static Component toComponent(@Nullable final String legacy) {
-        return LEGACY_TO_COMPONENT.get(legacy == null ? "" : legacy, LEGACY_COMPONENT_SERIALIZER::deserialize);
+        return LEGACY_TO_COMPONENT.get(legacy == null ? "" : legacy, input -> {
+            if (MINIMESSAGE_ONLY_TAGS.matcher(input).find()) {
+                try {
+                    return MINI_MESSAGE.deserialize(input);
+                } catch (RuntimeException ignored) {
+                    return LEGACY_COMPONENT_SERIALIZER.deserialize(input);
+                }
+            }
+            return LEGACY_COMPONENT_SERIALIZER.deserialize(input);
+        });
     }
 
     /**
      * Convert Component to legacy (bukkit) text.
+     * <p>
+     * Components carrying features legacy can't represent are serialized via
+     * MiniMessage so {@link #toComponent(String)} can round-trip them back.
      *
      * @param component The component.
-     * @return The legacy text.
+     * @return The legacy text, or a MiniMessage string for non-legacy components.
      */
     @NotNull
     public static String toLegacy(@NotNull final Component component) {
-        return COMPONENT_TO_LEGACY.get(component, LEGACY_COMPONENT_SERIALIZER::serialize);
+        return COMPONENT_TO_LEGACY.get(component, it -> {
+            if (isLegacySafe(it)) {
+                return LEGACY_COMPONENT_SERIALIZER.serialize(it);
+            }
+            return MINI_MESSAGE.serialize(it);
+        });
+    }
+
+    private static boolean isLegacySafe(@NotNull final Component component) {
+        if (!(component instanceof TextComponent)) {
+            return false;
+        }
+        var style = component.style();
+        if (style.hoverEvent() != null
+                || style.clickEvent() != null
+                || style.insertion() != null
+                || style.font() != null) {
+            return false;
+        }
+        for (Component child : component.children()) {
+            if (!isLegacySafe(child)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -701,8 +759,8 @@ public final class StringUtils {
                                            @NotNull final String completeFormat,
                                            @NotNull final String inProgressFormat,
                                            @NotNull final String incompleteFormat) {
-        Validate.isTrue(progress >= 0 && progress <= 1, "Progress must be between 0 and 1!");
-        Validate.isTrue(bars > 1, "Must have at least 2 bars!");
+        Preconditions.checkArgument(progress >= 0 && progress <= 1, "Progress must be between 0 and 1!");
+        Preconditions.checkArgument(bars > 1, "Must have at least 2 bars!");
 
         String completeColor = format(completeFormat);
         String inProgressColor = format(inProgressFormat);

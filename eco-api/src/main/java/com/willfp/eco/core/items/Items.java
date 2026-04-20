@@ -220,18 +220,14 @@ public final class Items {
 
         int stackAmount = 1;
 
-        String base1 = args[0].toLowerCase();
+        String[] split = args[0].toLowerCase().split(":");
 
-        String[] split = base1.split(":");
-
-        String base2 = split[0];
-        boolean isTag = base2.startsWith("#");
+        String base = split[0];
+        boolean isTag = base.startsWith("#");
 
         if (isTag) {
-            ItemTag itemTag = TAGS.get(base1.substring(1));
-            if (itemTag == null) {
-                itemTag = TAGS.get(base2.substring(1));
-            }
+            String tag = args[0].substring(1);
+            ItemTag itemTag = TAGS.get(tag);
 
             if (itemTag == null) {
                 return new EmptyTestableItem();
@@ -328,11 +324,10 @@ public final class Items {
 
         List<Predicate<ItemStack>> predicates = new ArrayList<>();
 
-        for (
-                LookupArgParser argParser : ARG_PARSERS) {
+        for (LookupArgParser argParser : ARG_PARSERS) {
             Predicate<ItemStack> predicate = argParser.parseArguments(modifierArgs, meta);
             if (predicate != null) {
-                predicates.add(argParser.parseArguments(modifierArgs, meta));
+                predicates.add(predicate);
             }
         }
 
@@ -543,7 +538,7 @@ public final class Items {
      */
     @NotNull
     @Deprecated(since = "6.70.0", forRemoval = true)
-    @SuppressWarnings("removal")
+    @SuppressWarnings({"removal", "DeprecatedIsStillUsed"})
     public static PersistentDataContainer getBaseNBT(@NotNull final ItemStack itemStack) {
         return FastItemStack.wrap(itemStack).getBaseTag();
     }
